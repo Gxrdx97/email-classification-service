@@ -1,0 +1,24 @@
+# Dependencies
+/vendor/
+/node_modules/
+
+# Env & secrets
+.env
+.env.*
+!.env.example
+
+# Data
+*.sqlite
+*.sqlite3
+/storage/*
+!/storage/.gitkeep
+
+# Logs & cache
+/var/
+/cache/
+/log/
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/
