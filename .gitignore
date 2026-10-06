@@ -17,6 +17,9 @@
 /var/
 /cache/
 /log/
+/infection-log.txt
+/infection-report.html
+/infection-summary.log
 
 # OS/editor
 .DS_Store

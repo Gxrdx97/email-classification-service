@@ -1,0 +1,210 @@
+name: CD — Promotion to Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Tag sha-<8> opcional; vazia promove o staging bem-sucedido mais recente"
+        required: false
+        default: ""
+        type: string
+  workflow_run:
+    workflows: ["CD — Deploy Staging"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: email-classification-service-deployment
+  cancel-in-progress: false
+
+jobs:
+  resolve-image:
+    if: ${{ (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      image_tag: ${{ steps.resolve.outputs.image_tag }}
+      app_image: ${{ steps.resolve.outputs.app_image }}
+    steps:
+      - name: Resolve a successfully staged immutable image
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          STAGING_SHA: ${{ github.event.workflow_run.head_sha }}
+          REQUESTED_IMAGE_TAG: ${{ inputs.image_tag }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          owner="$(printf '%s' "$REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
+          repository="ghcr.io/${owner}/email-classification-service"
+
+          if [ "$EVENT_NAME" = "workflow_run" ]; then
+            if [[ ! "$STAGING_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+              echo "::error::O evento de staging não forneceu um SHA válido"
+              exit 1
+            fi
+            tag="sha-${STAGING_SHA:0:8}"
+          else
+            runs_url="${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/workflows/cd-staging.yml/runs?branch=main&status=completed&per_page=100"
+            runs="$(curl --fail --silent --show-error \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "$runs_url")"
+
+            if [ -n "$REQUESTED_IMAGE_TAG" ]; then
+              if [[ ! "$REQUESTED_IMAGE_TAG" =~ ^sha-[0-9a-f]{8}$ ]]; then
+                echo "::error::image_tag deve usar o formato sha-<8 hex>"
+                exit 1
+              fi
+              tag="$REQUESTED_IMAGE_TAG"
+              if ! jq --exit-status --arg wanted "$tag" \
+                '[.workflow_runs[] | select(.conclusion == "success") | "sha-" + (.head_sha[0:8])] | index($wanted) != null' \
+                <<<"$runs" >/dev/null; then
+                echo "::error::A tag informada não corresponde a um deploy de staging bem-sucedido recente"
+                exit 1
+              fi
+            else
+              staging_sha="$(jq --exit-status --raw-output \
+                '[.workflow_runs[] | select(.conclusion == "success")][0].head_sha // empty' \
+                <<<"$runs")"
+              if [[ ! "$staging_sha" =~ ^[0-9a-fA-F]{40}$ ]]; then
+                echo "::error::Não foi encontrado deploy de staging bem-sucedido"
+                exit 1
+              fi
+              tag="sha-${staging_sha:0:8}"
+            fi
+          fi
+
+          echo "image_tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "app_image=${repository}:${tag}" >> "$GITHUB_OUTPUT"
+
+  soak:
+    needs: resolve-image
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Monitor staging for the full 30-minute soak
+        env:
+          DEPLOY_BASE_URL: ${{ secrets.DEPLOY_BASE_URL }}
+        run: |
+          set -euo pipefail
+          : "${DEPLOY_BASE_URL:?DEPLOY_BASE_URL must be configured in the staging environment}"
+          base_url="${DEPLOY_BASE_URL%/}"
+
+          check_health() {
+            path="$1"
+            status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+              --connect-timeout 5 --max-time 15 "${base_url}${path}" 2>/dev/null || true)"
+            if [ "$status" != "200" ]; then
+              echo "::error::Staging ficou indisponível durante o soak em ${path} (status=${status:-indisponível})"
+              return 1
+            fi
+          }
+
+          # Checa no início e a cada minuto até completar 30 minutos.
+          for minute in $(seq 0 30); do
+            check_health /api/health/live
+            check_health /api/health/ready
+            if [ "$minute" -lt 30 ]; then
+              sleep 60
+            fi
+          done
+
+  migrate-production:
+    needs: [resolve-image, soak]
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sync deploy Compose file
+        uses: appleboy/scp-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_SSH_HOST }}
+          username: ${{ secrets.DEPLOY_SSH_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          source: docker-compose.deploy.yml
+          target: /opt/email-classification-service
+          overwrite: true
+
+      - name: Prepare database and apply production migrations
+        uses: appleboy/ssh-action@v1
+        env:
+          APP_IMAGE: ${{ needs.resolve-image.outputs.app_image }}
+          DEPLOY_ENV_FILE: .env.production
+        with:
+          host: ${{ secrets.DEPLOY_SSH_HOST }}
+          username: ${{ secrets.DEPLOY_SSH_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          envs: APP_IMAGE,DEPLOY_ENV_FILE
+          script: |
+            set -eu
+            cd /opt/email-classification-service
+            docker compose --env-file "$DEPLOY_ENV_FILE" -p email-classification-service-production -f docker-compose.deploy.yml pull app
+            docker compose --env-file "$DEPLOY_ENV_FILE" -p email-classification-service-production -f docker-compose.deploy.yml up -d --no-deps pgsql redis
+            ready=0
+            for attempt in $(seq 1 60); do
+              if docker compose --env-file "$DEPLOY_ENV_FILE" -p email-classification-service-production -f docker-compose.deploy.yml exec -T pgsql pg_isready -q; then
+                ready=1
+                break
+              fi
+              sleep 5
+            done
+            if [ "$ready" -ne 1 ]; then
+              echo "PostgreSQL produção não ficou pronto" >&2
+              exit 1
+            fi
+            docker compose --env-file "$DEPLOY_ENV_FILE" -p email-classification-service-production -f docker-compose.deploy.yml run --rm --no-deps -e LARAVEL_CONFIG_CACHE=false app php artisan config:cache
+            docker compose --env-file "$DEPLOY_ENV_FILE" -p email-classification-service-production -f docker-compose.deploy.yml run --rm --no-deps -e LARAVEL_CONFIG_CACHE=false app php artisan migrate --force
+
+  promote:
+    needs: [resolve-image, migrate-production]
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Deploy the same immutable image validated in staging
+        uses: appleboy/ssh-action@v1
+        env:
+          APP_IMAGE: ${{ needs.resolve-image.outputs.app_image }}
+          DEPLOY_ENV_FILE: .env.production
+        with:
+          host: ${{ secrets.DEPLOY_SSH_HOST }}
+          username: ${{ secrets.DEPLOY_SSH_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          envs: APP_IMAGE,DEPLOY_ENV_FILE
+          script: |
+            set -eu
+            cd /opt/email-classification-service
+            docker compose --env-file "$DEPLOY_ENV_FILE" -p email-classification-service-production -f docker-compose.deploy.yml pull app web worker scheduler
+            docker compose --env-file "$DEPLOY_ENV_FILE" -p email-classification-service-production -f docker-compose.deploy.yml up -d --remove-orphans app web worker scheduler
+
+      - name: Wait for production health gates
+        env:
+          DEPLOY_BASE_URL: ${{ secrets.DEPLOY_BASE_URL }}
+        run: |
+          set -euo pipefail
+          : "${DEPLOY_BASE_URL:?DEPLOY_BASE_URL must be configured in the production environment}"
+          base_url="${DEPLOY_BASE_URL%/}"
+          for path in /api/health/live /api/health/ready; do
+            healthy=0
+            for attempt in $(seq 1 60); do
+              status="$(curl --silent --output /dev/null --write-out '%{http_code}' --connect-timeout 5 --max-time 15 "${base_url}${path}" 2>/dev/null || true)"
+              if [ "$status" = "200" ]; then
+                healthy=1
+                break
+              fi
+              sleep 10
+            done
+            if [ "$healthy" -ne 1 ]; then
+              echo "::error::Health gate de produção falhou em ${path} (status=${status:-indisponível})"
+              exit 1
+            fi
+          done

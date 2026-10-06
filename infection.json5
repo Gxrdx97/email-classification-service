@@ -1,0 +1,28 @@
+{
+    "$schema": "vendor/infection/infection/resources/schema.json",
+    "source": {
+        "directories": [
+            "app"
+        ]
+    },
+    "timeout": 30,
+    "logs": {
+        "text": "infection-log.txt",
+        "html": "infection-report.html",
+        "summary": "infection-summary.log",
+        "github": true
+    },
+    "mutators": {
+        "@default": true
+    },
+    "testFramework": "phpunit",
+    "phpUnit": {
+        "configDir": ".",
+        "customPath": "scripts/infection-pest.php"
+    },
+    "bootstrap": "vendor/autoload.php",
+    "initialTestsPhpOptions": "-d memory_limit=512M",
+    "threads": 1,
+    "minMsi": 80,
+    "minCoveredMsi": 90
+}

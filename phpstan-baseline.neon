@@ -1,0 +1,4 @@
+# Inicialmente vazio: não há código de aplicação legado a baselinear.
+# Gere/atualize somente para erros preexistentes; não o use para código novo.
+parameters:
+    ignoreErrors: []
