@@ -1,13 +1,14 @@
 # Tarefas — email-classification-service
 
-Status do projeto: bootstrap Laravel/Composer e cinco migrations baseline
-PostgreSQL existentes; a feature de domínio permanece incompleta. O único teste
-executado e aprovado até agora é o teste de schema/migrations
-`tests/Integration/Persistence/DomainSchemaMigrationTest.php` (5 testes, 41
-assertions, zero warnings/falhas). O quality gate completo não foi declarado
-concluído.
+Status do projeto em 2026-10-08: a implementação Laravel/PHP, migrations e
+testes estão presentes. `composer quality-gate` passou: Pest (178 testes, 944
+assertions), Larastan (sem erros) e Infection (3.607 mutantes mortos; 100% de
+Mutation Code Coverage e Covered Code MSI). Isso não prova individualmente os
+critérios C1–C62; veja `.specs/features/email-classification/checks.md` para o
+estado e a próxima etapa de reconciliação das provas. Este checklist legado não
+foi marcado item a item.
 
-Este arquivo é apenas um índice operacional legado para implementação futura. As obrigações
+Este arquivo é apenas um índice operacional legado. As obrigações
 canônicas, provas e cobertura estão em `.specs/features/email-classification/plan.md` e
 `.specs/features/email-classification/checks.md`; não criar outro task breakdown dentro de
 `.specs`.

@@ -14,6 +14,33 @@ if (is_int($configurationIndex) && isset($arguments[$configurationIndex + 1])) {
     $xml = is_file($configuration) ? file_get_contents($configuration) : false;
 
     if (is_string($xml)) {
+        $document = new DOMDocument;
+
+        if ($document->loadXML($xml, LIBXML_NONET)) {
+            foreach ($document->getElementsByTagName('env') as $variable) {
+                if (! $variable instanceof DOMElement) {
+                    continue;
+                }
+
+                $name = $variable->getAttribute('name');
+                if ($name === '') {
+                    continue;
+                }
+
+                $value = $variable->getAttribute('value');
+                $force = in_array(strtolower($variable->getAttribute('force')), ['true', '1'], true);
+
+                if ($force || getenv($name) === false) {
+                    putenv("{$name}={$value}");
+                }
+
+                $value = getenv($name);
+                if ($force || ! isset($_ENV[$name])) {
+                    $_ENV[$name] = $value;
+                }
+            }
+        }
+
         // Infection gera um filtro PHPUnit temporário; Pest registra suas
         // próprias suites e não consome esse bloco.
         $sanitized = preg_replace('/\s*<filter>.*?<\/filter>/s', '', $xml);

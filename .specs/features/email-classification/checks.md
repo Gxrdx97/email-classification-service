@@ -18,10 +18,10 @@ Plan: `.specs/features/email-classification/plan.md`
 
 ## Estado de execução
 
-- C1–C62 são critérios planejados e ainda não foram executados. Um check só pode
-  ser chamado `green` após sua execução real e o registro da evidência; waivers
-  de blockers não contam como evidência.
-- Única evidência real registrada: `tests/Integration/Persistence/DomainSchemaMigrationTest.php --fail-on-warning --display-warnings --no-progress` — 5 tests, 41 assertions, 0 failures e 0 warnings no banco local de teste. Essa execução não prova C1–C62.
+- Em 2026-10-08, `docker compose -f docker-compose.yml -f docker-compose.test.yml exec app composer quality-gate` passou. A execução usou um override temporário para não publicar a porta PostgreSQL no host; o arquivo foi removido após os testes.
+- Resultado agregado: Pest — 178 testes, 944 assertions; Larastan — sem erros; Infection — 3.607 mutantes mortos, 100% Mutation Code Coverage e 100% Covered Code MSI (thresholds configurados: 80% e 90%).
+- C1–C62 ainda não têm evidência individual mapeada. A aprovação da suíte agregada não prova automaticamente cada critério, e a inspeção encontrou selectors `--filter` declarados que não correspondem a testes localizados. Não marcar critérios como `green` até reconciliar e executar suas provas específicas.
+- A evidência histórica de migrations (5 testes, 41 assertions) continua válida para o schema, mas não prova individualmente C1–C62.
 
 ## Checks
 
@@ -274,7 +274,9 @@ Claims que nomeiam um código de status ou rota: C38 e C45-C47 têm provas de fr
 Evidências:
 
 - O plano enumera ações do Gate, Estados operacionais, alvos de Revisão, rejeição de Sugestão, status de rotas e fronteiras da saída hostil do modelo; cada item está associado acima.
-- Os selectors nomeados de `--filter` do Pest são critérios planejados de prova. Nenhum C1–C62 foi executado; a evidência de migration test registrada acima não cobre esses critérios.
+- O quality gate executou a suíte Pest completa, além de Larastan e Infection, com os resultados registrados em Estado de execução.
+- O adaptador `scripts/infection-pest.php` agora aplica as variáveis `<php><env>` do XML PHPUnit ao subprocesso Pest, respeitando `force`; `tests/Unit/Tooling/InfectionPestAdapterTest.php` cobre a regressão do ambiente Redis do Compose contra os backends efêmeros de teste.
+- A suíte agregada não substitui a prova por critério. Os selectors nomeados de `--filter` precisam ser reconciliados com testes existentes; C1–C62 permanecem sem status individual `green` até haver vínculo e evidência de execução.
 
 ## Swept
 
@@ -292,4 +294,4 @@ Evidências:
 
 ## Handoff
 
-Somente fase de artefatos: `.specs/STATE.md`, `plan.md` e `checks.md`, além da documentação legada. Estimativa atualizada: `~10k + ~12k + ~15k + ~16k + ~18k + ~8k + ~8k = ~87k < 150k` de orçamento. O próximo builder pode implementar e executar as provas planejadas C1–C62 nos seams públicos nomeados; `PD-009` e `PD-010` não são blockers, e `PD-012` está resolvida. Registrar evidência por check: nenhum C1–C62 está `green` até sua execução real; a evidência de migration test existente não substitui essa execução. Um relatório de verificação depende da implementação e da execução do Verifier independente.
+Implementação e suíte existentes; o quality gate agregado passou em 2026-10-08. `PD-009` e `PD-010` não são blockers, e `PD-012` está resolvida. Próximo passo: reconciliar os selectors de prova e registrar evidência individual para C1–C62; nenhum critério está `green` somente por causa do resultado agregado. A verificação final ainda requer prova por critério e Verifier independente.

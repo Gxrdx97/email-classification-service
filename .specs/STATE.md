@@ -25,14 +25,14 @@
 
 ## Handoff
 
-- **Atualização**: a implementação Laravel/PHP e as migrations iniciais já existem; `PD-009` e `PD-010` foram dispensadas permanentemente pelo Usuário. As decisões oficiais continuam humanas; a suíte completa ainda precisa ser implementada e executada.
+- **Atualização**: a implementação Laravel/PHP, as migrations e a suíte Pest existem. Em 2026-10-08, `composer quality-gate` passou: Pest (178 testes, 944 assertions), Larastan (sem erros) e Infection (3.607 mutantes mortos; Mutation Code Coverage e Covered Code MSI de 100%). `PD-009` e `PD-010` continuam dispensadas permanentemente; as decisões oficiais continuam humanas.
 
 **Feature**: `email-classification`
 **Onde**: os artefatos Spec Lean e a documentação legada registram o escopo completo e as decisões de runtime, privacidade, integrações e API
-**Em andamento**: schema PostgreSQL inicial aplicado ao banco local de teste; código de domínio e seams executáveis ainda precisam ser implementados. `PD-011` permanece aberto para decisão de embedding/recuperação.
-**Próximo passo**: fechar as lacunas do schema (outbox de Pré-análise e ciclo de vida de Exemplos), implementar os módulos de domínio e validar os critérios com Pest.
+**Em andamento**: código de domínio, adaptadores e testes já estão presentes. O gate agregado passou, mas C1–C62 ainda não têm evidência individual mapeada; alguns selectors de prova declarados não correspondem a testes encontrados na suíte. `PD-011` permanece aberto para decisão/avaliação de embeddings e recuperação.
+**Próximo passo**: reconciliar cada C1–C62 com um teste executável, corrigir selectors obsoletos e executar/provar os critérios que ainda faltam. Só então registrar critérios individuais como `green`.
 **Bloqueios**: nenhum bloqueio de bootstrap por PD-009/PD-010; o registro OIDC, as credenciais de operação e as políticas de go-live continuam pré-condições para dados reais/implantação.
-**Não commitado**: `docs/specs/email-classification/spec.md` pré-existente, `CONTEXT.md` e `docs/adr/0001-classificacao-por-thread.md` não rastreados, além dos artefatos Spec Lean desta alteração
+**Alterações locais não commitadas nesta sessão**: `scripts/infection-pest.php`, `tests/Unit/Tooling/InfectionPestAdapterTest.php` e os registros de progresso atualizados
 **Branch**: branch de trabalho atual
 
 ## Pendências registradas
