@@ -1,0 +1,131 @@
+# Compose de deploy. A imagem é injetada pelo workflow em APP_IMAGE; este
+# arquivo não contém build, defaults de credenciais ou arquivos de ambiente.
+services:
+  app:
+    image: ${APP_IMAGE:?APP_IMAGE is required}
+    restart: unless-stopped
+    working_dir: /var/www/html
+    command: ["php-fpm", "-F"]
+    env_file:
+      - ${DEPLOY_ENV_FILE:-.env}
+    environment: &app-environment
+      APP_ENV: production
+      APP_DEBUG: "false"
+      APP_KEY: ${APP_KEY:?APP_KEY must be provisioned in the deploy environment file}
+      LARAVEL_CONFIG_CACHE: "true"
+      LOG_CHANNEL: ${LOG_CHANNEL:-stderr}
+      DB_CONNECTION: pgsql
+      DB_HOST: pgsql
+      DB_PORT: "5432"
+      DB_DATABASE: ${DB_DATABASE:?DB_DATABASE must be provisioned in the deploy environment file}
+      DB_USERNAME: ${DB_USERNAME:?DB_USERNAME must be provisioned in the deploy environment file}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be provisioned in the deploy environment file}
+      DB_URL: ""
+      CACHE_STORE: redis
+      SESSION_DRIVER: redis
+      QUEUE_CONNECTION: redis
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_CLIENT: phpredis
+      REDIS_PASSWORD: ""
+    expose:
+      - "9000"
+    depends_on:
+      pgsql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck", "fpm"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  web:
+    image: ${APP_IMAGE:?APP_IMAGE is required}
+    restart: unless-stopped
+    command: ["nginx", "-g", "daemon off;"]
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      app:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck", "web"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  worker:
+    image: ${APP_IMAGE:?APP_IMAGE is required}
+    restart: unless-stopped
+    working_dir: /var/www/html
+    command: ["php", "artisan", "queue:work", "redis"]
+    env_file:
+      - ${DEPLOY_ENV_FILE:-.env}
+    environment: *app-environment
+    depends_on:
+      pgsql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck", "worker"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  scheduler:
+    image: ${APP_IMAGE:?APP_IMAGE is required}
+    restart: unless-stopped
+    working_dir: /var/www/html
+    command: ["php", "artisan", "schedule:work"]
+    env_file:
+      - ${DEPLOY_ENV_FILE:-.env}
+    environment: *app-environment
+    depends_on:
+      pgsql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck", "scheduler"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  pgsql:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_DATABASE:?DB_DATABASE must be provisioned in the deploy environment file}
+      POSTGRES_USER: ${DB_USERNAME:?DB_USERNAME must be provisioned in the deploy environment file}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be provisioned in the deploy environment file}
+    volumes:
+      - pgsql-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -q -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgsql-data:
+  redis-data:

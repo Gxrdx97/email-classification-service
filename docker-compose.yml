@@ -1,0 +1,164 @@
+name: email-classification-service
+
+x-app-build: &app-build
+  context: .
+  dockerfile: docker/app/Dockerfile
+  target: development
+  args:
+    PHP_RUNTIME_IMAGE: ${PHP_RUNTIME_IMAGE:-php:8.4-fpm-bookworm}
+    INSTALL_RUNTIME: "1"
+
+x-laravel-environment: &laravel-environment
+  APP_ENV: local
+  APP_DEBUG: "true"
+  APP_URL: ${APP_URL:-http://localhost:8080}
+  # Chave falsa exclusiva deste Compose local; substitua via .env se necessário.
+  APP_KEY: ${APP_KEY:-base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=}
+  LARAVEL_CONFIG_CACHE: "false"
+  LOG_CHANNEL: stderr
+  DB_CONNECTION: pgsql
+  DB_HOST: pgsql
+  DB_PORT: "5432"
+  DB_DATABASE: email_classification_test
+  DB_USERNAME: sail
+  DB_PASSWORD: password
+  DB_URL: ""
+  CACHE_STORE: redis
+  SESSION_DRIVER: redis
+  QUEUE_CONNECTION: redis
+  REDIS_HOST: redis
+  REDIS_PORT: "6379"
+  MAIL_MAILER: array
+  REDIS_PASSWORD: ""
+
+services:
+  app:
+    image: email-classification-service:dev
+    build: *app-build
+    restart: unless-stopped
+    working_dir: /var/www/html
+    command: ["php-fpm", "-F"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      <<: *laravel-environment
+    volumes:
+      - .:/var/www/html
+      - vendor:/var/www/html/vendor
+    depends_on:
+      pgsql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck", "fpm"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  web:
+    image: email-classification-service:dev
+    restart: unless-stopped
+    command: ["nginx", "-g", "daemon off;"]
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./public:/var/www/html/public:ro
+    depends_on:
+      app:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck", "web"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  worker:
+    image: email-classification-service:dev
+    restart: unless-stopped
+    working_dir: /var/www/html
+    command: ["php", "artisan", "queue:work", "redis"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      <<: *laravel-environment
+    volumes:
+      - .:/var/www/html
+      - vendor:/var/www/html/vendor
+    depends_on:
+      pgsql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck", "worker"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  scheduler:
+    image: email-classification-service:dev
+    restart: unless-stopped
+    working_dir: /var/www/html
+    command: ["php", "artisan", "schedule:work"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      <<: *laravel-environment
+    volumes:
+      - .:/var/www/html
+      - vendor:/var/www/html/vendor
+    depends_on:
+      pgsql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck", "scheduler"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  pgsql:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: email_classification_test
+      POSTGRES_USER: sail
+      POSTGRES_PASSWORD: password
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgsql-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -q -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgsql-data:
+  redis-data:
+  vendor:

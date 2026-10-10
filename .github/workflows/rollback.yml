@@ -1,0 +1,109 @@
+name: CD — Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Tag imutável anterior no formato sha-<8 hex>"
+        required: true
+        type: string
+      environment:
+        description: Ambiente alvo
+        required: true
+        type: choice
+        options:
+          - production
+          - staging
+        default: production
+
+permissions:
+  contents: read
+
+concurrency:
+  group: email-classification-service-deployment
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    outputs:
+      app_image: ${{ steps.image.outputs.app_image }}
+      deploy_env_file: ${{ steps.image.outputs.deploy_env_file }}
+      compose_project: ${{ steps.image.outputs.compose_project }}
+    steps:
+      - name: Validate rollback image reference
+        id: image
+        env:
+          REQUESTED_IMAGE_TAG: ${{ inputs.image_tag }}
+          TARGET_ENVIRONMENT: ${{ inputs.environment }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$REQUESTED_IMAGE_TAG" =~ ^sha-[0-9a-f]{8}$ ]]; then
+            echo "::error::Rollback aceita somente tags sha-<8 hex> imutáveis"
+            exit 1
+          fi
+          owner="$(printf '%s' "$REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
+          case "$TARGET_ENVIRONMENT" in
+            staging|production) ;;
+            *) echo "::error::Ambiente inválido"; exit 1 ;;
+          esac
+          echo "app_image=ghcr.io/${owner}/email-classification-service:${REQUESTED_IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "deploy_env_file=.env.${TARGET_ENVIRONMENT}" >> "$GITHUB_OUTPUT"
+          echo "compose_project=email-classification-service-${TARGET_ENVIRONMENT}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+
+      - name: Sync deploy Compose file
+        uses: appleboy/scp-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_SSH_HOST }}
+          username: ${{ secrets.DEPLOY_SSH_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          source: docker-compose.deploy.yml
+          target: /opt/email-classification-service
+          overwrite: true
+
+      # Rollback não aplica config:cache nem migrations: os containers
+      # recriam somente o cache da versão anterior no próprio startup.
+      - name: Redeploy previous application image without migrations
+        uses: appleboy/ssh-action@v1
+        env:
+          APP_IMAGE: ${{ steps.image.outputs.app_image }}
+          DEPLOY_ENV_FILE: ${{ steps.image.outputs.deploy_env_file }}
+          COMPOSE_PROJECT: ${{ steps.image.outputs.compose_project }}
+        with:
+          host: ${{ secrets.DEPLOY_SSH_HOST }}
+          username: ${{ secrets.DEPLOY_SSH_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          envs: APP_IMAGE,DEPLOY_ENV_FILE,COMPOSE_PROJECT
+          script: |
+            set -eu
+            cd /opt/email-classification-service
+            docker compose --env-file "$DEPLOY_ENV_FILE" -p "$COMPOSE_PROJECT" -f docker-compose.deploy.yml pull app web worker scheduler
+            docker compose --env-file "$DEPLOY_ENV_FILE" -p "$COMPOSE_PROJECT" -f docker-compose.deploy.yml up -d --remove-orphans app web worker scheduler
+
+      - name: Wait for health gates after rollback
+        env:
+          DEPLOY_BASE_URL: ${{ secrets.DEPLOY_BASE_URL }}
+        run: |
+          set -euo pipefail
+          : "${DEPLOY_BASE_URL:?DEPLOY_BASE_URL must be configured in the selected environment}"
+          base_url="${DEPLOY_BASE_URL%/}"
+          for path in /api/health/live /api/health/ready; do
+            healthy=0
+            for attempt in $(seq 1 60); do
+              status="$(curl --silent --output /dev/null --write-out '%{http_code}' --connect-timeout 5 --max-time 15 "${base_url}${path}" 2>/dev/null || true)"
+              if [ "$status" = "200" ]; then
+                healthy=1
+                break
+              fi
+              sleep 10
+            done
+            if [ "$healthy" -ne 1 ]; then
+              echo "::error::Health gate após rollback falhou em ${path} (status=${status:-indisponível})"
+              exit 1
+            fi
+          done
